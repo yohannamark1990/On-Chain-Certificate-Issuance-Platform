@@ -220,3 +220,131 @@
     none
   )
 )
+
+(define-map batch-operations
+  uint 
+  {
+    institution: principal,
+    certificate-ids: (list 50 uint),
+    operation-date: uint,
+    batch-type: (string-ascii 20)
+  }
+)
+
+(define-data-var next-batch-id uint u1)
+
+(define-public (batch-issue-certificates 
+  (recipients (list 10 principal))
+  (certificate-types (list 10 (string-ascii 50)))
+  (titles (list 10 (string-ascii 200)))
+  (expiry-dates (list 10 (optional uint)))
+  (metadata-uris (list 10 (string-ascii 500)))
+  (verification-codes (list 10 (string-ascii 64)))
+)
+  (let (
+    (institution tx-sender)
+    (batch-id (var-get next-batch-id))
+  )
+    (match (map-get? institutions institution)
+      institution-data
+      (if (get verified institution-data)
+        (let ((result (fold batch-process-cert-data 
+          (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9)
+          {success: true, cert-ids: (list), recipients: recipients, 
+           types: certificate-types, titles: titles, expiry-dates: expiry-dates,
+           metadata-uris: metadata-uris, verification-codes: verification-codes})))
+          (if (get success result)
+            (begin
+              (map-set batch-operations batch-id {
+                institution: institution,
+                certificate-ids: (get cert-ids result),
+                operation-date: stacks-block-height,
+                batch-type: "issue"
+              })
+              (var-set next-batch-id (+ batch-id u1))
+              (ok {batch-id: batch-id, certificate-ids: (get cert-ids result)})
+            )
+            (err u106)
+          )
+        )
+        ERR_NOT_AUTHORIZED
+      )
+      ERR_INSTITUTION_NOT_REGISTERED
+    )
+  )
+)
+
+(define-private (batch-process-cert-data 
+  (index uint)
+  (acc {success: bool, cert-ids: (list 50 uint), recipients: (list 10 principal),
+        types: (list 10 (string-ascii 50)), titles: (list 10 (string-ascii 200)),
+        expiry-dates: (list 10 (optional uint)), metadata-uris: (list 10 (string-ascii 500)),
+        verification-codes: (list 10 (string-ascii 64))})
+)
+  (if (and (get success acc) (< index (len (get recipients acc))))
+    (let ((cert-id (var-get next-certificate-id)))
+      (match (element-at (get recipients acc) index)
+        recipient
+        (match (nft-mint? certificate cert-id recipient)
+          success
+          (begin
+            (map-set certificates cert-id {
+              recipient: recipient,
+              institution: tx-sender,
+              certificate-type: (default-to "" (element-at (get types acc) index)),
+              title: (default-to "" (element-at (get titles acc) index)),
+              issue-date: stacks-block-height,
+              expiry-date: (default-to none (element-at (get expiry-dates acc) index)),
+              metadata-uri: (default-to "" (element-at (get metadata-uris acc) index)),
+              revoked: false
+            })
+            (map-set institution-certificates {institution: tx-sender, cert-id: cert-id} true)
+            (map-set recipient-certificates {recipient: recipient, cert-id: cert-id} true)
+            (map-set certificate-verification-codes cert-id 
+              (default-to "" (element-at (get verification-codes acc) index)))
+            (var-set next-certificate-id (+ cert-id u1))
+            (merge acc {cert-ids: (unwrap-panic (as-max-len? (append (get cert-ids acc) cert-id) u50))})
+          )
+          error
+          (merge acc {success: false})
+        )
+        (merge acc {success: false})
+      )
+    )
+    acc
+  )
+)
+
+(define-read-only (get-batch-operation (batch-id uint))
+  (map-get? batch-operations batch-id)
+)
+
+(define-read-only (get-recipient-certificate-count (recipient principal))
+  (let ((max-id (var-get next-certificate-id)))
+    (fold count-recipient-certs 
+      (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10 u11 u12 u13 u14 u15 u16 u17 u18 u19 u20 
+            u21 u22 u23 u24 u25 u26 u27 u28 u29 u30 u31 u32 u33 u34 u35 u36 u37 u38 u39 u40
+            u41 u42 u43 u44 u45 u46 u47 u48 u49 u50)
+      {count: u0, recipient: recipient, max-id: max-id})))
+
+(define-private (count-recipient-certs (cert-id uint) (acc {count: uint, recipient: principal, max-id: uint}))
+  (if (< cert-id (get max-id acc))
+    (if (has-certificate (get recipient acc) cert-id)
+      {count: (+ (get count acc) u1), recipient: (get recipient acc), max-id: (get max-id acc)}
+      acc)
+    acc))
+
+(define-read-only (get-institution-certificate-count (institution principal))
+  (let ((max-id (var-get next-certificate-id)))
+    (get count (fold count-institution-certs 
+      (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10 u11 u12 u13 u14 u15 u16 u17 u18 u19 u20 
+            u21 u22 u23 u24 u25 u26 u27 u28 u29 u30 u31 u32 u33 u34 u35 u36 u37 u38 u39 u40
+            u41 u42 u43 u44 u45 u46 u47 u48 u49 u50)
+      {count: u0, institution: institution, max-id: max-id}))))
+
+(define-private (count-institution-certs (cert-id uint) (acc {count: uint, institution: principal, max-id: uint}))
+  (if (< cert-id (get max-id acc))
+    (if (institution-issued-certificate (get institution acc) cert-id)
+      {count: (+ (get count acc) u1), institution: (get institution acc), max-id: (get max-id acc)}
+      acc)
+    acc))
