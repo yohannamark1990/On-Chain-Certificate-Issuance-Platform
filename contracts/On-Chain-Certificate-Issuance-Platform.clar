@@ -6,6 +6,12 @@
 (define-constant ERR_INSTITUTION_NOT_REGISTERED (err u104))
 (define-constant ERR_CERTIFICATE_REVOKED (err u105))
 
+(define-constant ERR_TEMPLATE_NOT_FOUND (err u200))
+(define-constant ERR_TEMPLATE_ALREADY_EXISTS (err u201))
+(define-constant ERR_TEMPLATE_INACTIVE (err u202))
+
+(define-data-var next-template-id uint u1)
+
 (define-non-fungible-token certificate uint)
 
 (define-data-var next-certificate-id uint u1)
@@ -348,3 +354,153 @@
       {count: (+ (get count acc) u1), institution: (get institution acc), max-id: (get max-id acc)}
       acc)
     acc))
+
+
+(define-map certificate-templates
+  uint
+  {
+    institution: principal,
+    template-name: (string-ascii 100),
+    certificate-type: (string-ascii 50),
+    title-prefix: (string-ascii 150),
+    default-expiry-period: (optional uint),
+    metadata-template: (string-ascii 400),
+    active: bool,
+    creation-date: uint,
+    usage-count: uint
+  }
+)
+
+(define-map institution-templates
+  {institution: principal, template-id: uint}
+  bool
+)
+
+(define-public (create-certificate-template
+  (template-name (string-ascii 100))
+  (certificate-type (string-ascii 50))
+  (title-prefix (string-ascii 150))
+  (default-expiry-period (optional uint))
+  (metadata-template (string-ascii 400))
+)
+  (let (
+    (template-id (var-get next-template-id))
+    (institution tx-sender)
+  )
+    (match (map-get? institutions institution)
+      institution-data
+      (if (get verified institution-data)
+        (begin
+          (map-set certificate-templates template-id {
+            institution: institution,
+            template-name: template-name,
+            certificate-type: certificate-type,
+            title-prefix: title-prefix,
+            default-expiry-period: default-expiry-period,
+            metadata-template: metadata-template,
+            active: true,
+            creation-date: stacks-block-height,
+            usage-count: u0
+          })
+          (map-set institution-templates {institution: institution, template-id: template-id} true)
+          (var-set next-template-id (+ template-id u1))
+          (ok template-id)
+        )
+        ERR_NOT_AUTHORIZED
+      )
+      ERR_INSTITUTION_NOT_REGISTERED
+    )
+  )
+)
+
+(define-public (issue-certificate-from-template
+  (template-id uint)
+  (recipient principal)
+  (title-suffix (string-ascii 50))
+  (custom-expiry (optional uint))
+  (verification-code (string-ascii 64))
+)
+  (let ((institution tx-sender))
+    (match (map-get? certificate-templates template-id)
+      template-data
+      (if (and 
+           (is-eq (get institution template-data) institution)
+           (get active template-data))
+        (let (
+          (cert-id (var-get next-certificate-id))
+          (full-title (concat (get title-prefix template-data) title-suffix))
+          (final-expiry (match custom-expiry
+            custom (some custom)
+            (match (get default-expiry-period template-data)
+              default-period (some (+ stacks-block-height default-period))
+              none)))
+        )
+          (try! (nft-mint? certificate cert-id recipient))
+          (map-set certificates cert-id {
+            recipient: recipient,
+            institution: institution,
+            certificate-type: (get certificate-type template-data),
+            title: full-title,
+            issue-date: stacks-block-height,
+            expiry-date: final-expiry,
+            metadata-uri: (get metadata-template template-data),
+            revoked: false
+          })
+          (map-set institution-certificates {institution: institution, cert-id: cert-id} true)
+          (map-set recipient-certificates {recipient: recipient, cert-id: cert-id} true)
+          (map-set certificate-verification-codes cert-id verification-code)
+          (map-set certificate-templates template-id 
+            (merge template-data {usage-count: (+ (get usage-count template-data) u1)}))
+          (var-set next-certificate-id (+ cert-id u1))
+          (ok cert-id)
+        )
+        (if (get active template-data)
+          ERR_NOT_AUTHORIZED
+          ERR_TEMPLATE_INACTIVE)
+      )
+      ERR_TEMPLATE_NOT_FOUND
+    )
+  )
+)
+
+(define-public (toggle-template-status (template-id uint))
+  (let ((institution tx-sender))
+    (match (map-get? certificate-templates template-id)
+      template-data
+      (if (is-eq (get institution template-data) institution)
+        (begin
+          (map-set certificate-templates template-id 
+            (merge template-data {active: (not (get active template-data))}))
+          (ok (not (get active template-data)))
+        )
+        ERR_NOT_AUTHORIZED
+      )
+      ERR_TEMPLATE_NOT_FOUND
+    )
+  )
+)
+
+(define-read-only (get-certificate-template (template-id uint))
+  (map-get? certificate-templates template-id)
+)
+
+(define-read-only (get-institution-template-count (institution principal))
+  (let ((max-id (var-get next-template-id)))
+    (get count (fold count-institution-templates
+      (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10 u11 u12 u13 u14 u15 u16 u17 u18 u19 u20)
+      {count: u0, institution: institution, max-id: max-id}))))
+
+(define-private (count-institution-templates 
+  (template-id uint) 
+  (acc {count: uint, institution: principal, max-id: uint})
+)
+  (if (< template-id (get max-id acc))
+    (if (default-to false (map-get? institution-templates 
+          {institution: (get institution acc), template-id: template-id}))
+      {count: (+ (get count acc) u1), institution: (get institution acc), max-id: (get max-id acc)}
+      acc)
+    acc))
+
+(define-read-only (get-next-template-id)
+  (var-get next-template-id)
+)
