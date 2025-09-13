@@ -504,3 +504,132 @@
 (define-read-only (get-next-template-id)
   (var-get next-template-id)
 )
+
+
+(define-constant ERR_ACHIEVEMENT_NOT_FOUND (err u300))
+(define-constant ERR_ACHIEVEMENT_ALREADY_EARNED (err u301))
+
+(define-data-var next-achievement-id uint u1)
+
+(define-map achievement-definitions
+  uint
+  {
+    name: (string-ascii 100),
+    description: (string-ascii 200),
+    achievement-type: (string-ascii 30),
+    threshold: uint,
+    active: bool
+  }
+)
+
+(define-map user-achievements
+  {user: principal, achievement-id: uint}
+  {
+    earned-date: uint,
+    progress: uint,
+    completed: bool
+  }
+)
+
+(define-map achievement-progress
+  {user: principal, metric: (string-ascii 30)}
+  uint
+)
+
+(define-public (create-achievement
+  (name (string-ascii 100))
+  (description (string-ascii 200))
+  (achievement-type (string-ascii 30))
+  (threshold uint)
+)
+  (let ((achievement-id (var-get next-achievement-id)))
+    (if (is-eq tx-sender CONTRACT_OWNER)
+      (begin
+        (map-set achievement-definitions achievement-id {
+          name: name,
+          description: description,
+          achievement-type: achievement-type,
+          threshold: threshold,
+          active: true
+        })
+        (var-set next-achievement-id (+ achievement-id u1))
+        (ok achievement-id)
+      )
+      ERR_NOT_AUTHORIZED
+    )
+  )
+)
+
+(define-public (update-progress (user principal) (metric (string-ascii 30)) (increment uint))
+  (let ((new-progress (+ (default-to u0 (map-get? achievement-progress {user: user, metric: metric})) increment)))
+    (begin
+      (map-set achievement-progress {user: user, metric: metric} new-progress)
+      (check-achievements user metric new-progress)
+      (ok new-progress)
+    )
+  )
+)
+
+(define-private (check-achievements (user principal) (metric (string-ascii 30)) (progress uint))
+  (let ((achievement-ids (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10)))
+    (fold check-single-achievement achievement-ids {user: user, metric: metric, progress: progress, success: true})
+    true
+  )
+)
+
+(define-private (check-single-achievement 
+  (achievement-id uint)
+  (acc {user: principal, metric: (string-ascii 30), progress: uint, success: bool})
+)
+  (match (map-get? achievement-definitions achievement-id)
+    achievement-data
+    (if (and 
+         (get active achievement-data)
+         (is-eq (get achievement-type achievement-data) (get metric acc))
+         (>= (get progress acc) (get threshold achievement-data)))
+      (let ((user-key {user: (get user acc), achievement-id: achievement-id}))
+        (if (is-none (map-get? user-achievements user-key))
+          (begin
+            (map-set user-achievements user-key {
+              earned-date: stacks-block-height,
+              progress: (get progress acc),
+              completed: true
+            })
+            acc
+          )
+          acc
+        )
+      )
+      acc
+    )
+    acc
+  )
+)
+
+(define-read-only (get-achievement (achievement-id uint))
+  (map-get? achievement-definitions achievement-id)
+)
+
+(define-read-only (get-user-achievement (user principal) (achievement-id uint))
+  (map-get? user-achievements {user: user, achievement-id: achievement-id})
+)
+
+(define-read-only (get-user-progress (user principal) (metric (string-ascii 30)))
+  (default-to u0 (map-get? achievement-progress {user: user, metric: metric}))
+)
+
+(define-read-only (get-user-achievement-count (user principal))
+  (let ((achievement-ids (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10)))
+    (get count (fold count-user-achievements achievement-ids {user: user, count: u0}))
+  )
+)
+
+(define-private (count-user-achievements 
+  (achievement-id uint) 
+  (acc {user: principal, count: uint})
+)
+  (if (is-some (map-get? user-achievements {user: (get user acc), achievement-id: achievement-id}))
+    {user: (get user acc), count: (+ (get count acc) u1)}
+    acc
+  )
+)
