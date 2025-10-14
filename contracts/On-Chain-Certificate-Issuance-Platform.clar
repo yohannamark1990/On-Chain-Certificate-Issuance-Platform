@@ -10,6 +10,10 @@
 (define-constant ERR_TEMPLATE_ALREADY_EXISTS (err u201))
 (define-constant ERR_TEMPLATE_INACTIVE (err u202))
 
+(define-constant ERR_INVALID_RATING (err u400))
+(define-constant ERR_ALREADY_ENDORSED (err u401))
+(define-constant ERR_CANNOT_ENDORSE_OWN (err u402))
+
 (define-data-var next-template-id uint u1)
 
 (define-non-fungible-token certificate uint)
@@ -632,4 +636,92 @@
     {user: (get user acc), count: (+ (get count acc) u1)}
     acc
   )
+)
+
+
+(define-map certificate-endorsements
+  {cert-id: uint, endorser: principal}
+  {
+    rating: uint,
+    endorsement-date: uint,
+    comment: (string-ascii 200)
+  }
+)
+
+(define-map certificate-endorsement-count
+  uint
+  uint
+)
+
+(define-map certificate-total-rating
+  uint
+  uint
+)
+
+(define-public (endorse-certificate 
+  (cert-id uint)
+  (rating uint)
+  (comment (string-ascii 200))
+)
+  (let (
+    (endorser tx-sender)
+    (endorsement-key {cert-id: cert-id, endorser: endorser})
+  )
+    (match (map-get? certificates cert-id)
+      cert-data
+      (if (and
+            (not (get revoked cert-data))
+            (is-certificate-valid cert-id)
+            (>= rating u1)
+            (<= rating u5)
+            (not (is-eq endorser (get institution cert-data)))
+            (not (is-eq endorser (get recipient cert-data))))
+        (if (is-none (map-get? certificate-endorsements endorsement-key))
+          (let (
+            (current-count (default-to u0 (map-get? certificate-endorsement-count cert-id)))
+            (current-total (default-to u0 (map-get? certificate-total-rating cert-id)))
+          )
+            (map-set certificate-endorsements endorsement-key {
+              rating: rating,
+              endorsement-date: stacks-block-height,
+              comment: comment
+            })
+            (map-set certificate-endorsement-count cert-id (+ current-count u1))
+            (map-set certificate-total-rating cert-id (+ current-total rating))
+            (ok true)
+          )
+          ERR_ALREADY_ENDORSED
+        )
+        (if (or (is-eq endorser (get institution cert-data)) 
+                (is-eq endorser (get recipient cert-data)))
+          ERR_CANNOT_ENDORSE_OWN
+          ERR_INVALID_RATING)
+      )
+      ERR_CERTIFICATE_NOT_FOUND
+    )
+  )
+)
+
+(define-read-only (get-certificate-endorsement-count (cert-id uint))
+  (default-to u0 (map-get? certificate-endorsement-count cert-id))
+)
+
+(define-read-only (get-certificate-average-rating (cert-id uint))
+  (let (
+    (total-rating (default-to u0 (map-get? certificate-total-rating cert-id)))
+    (endorsement-count (default-to u0 (map-get? certificate-endorsement-count cert-id)))
+  )
+    (if (> endorsement-count u0)
+      (some (/ total-rating endorsement-count))
+      none
+    )
+  )
+)
+
+(define-read-only (get-endorsement (cert-id uint) (endorser principal))
+  (map-get? certificate-endorsements {cert-id: cert-id, endorser: endorser})
+)
+
+(define-read-only (has-endorsed (cert-id uint) (endorser principal))
+  (is-some (map-get? certificate-endorsements {cert-id: cert-id, endorser: endorser}))
 )
