@@ -14,6 +14,14 @@
 (define-constant ERR_ALREADY_ENDORSED (err u401))
 (define-constant ERR_CANNOT_ENDORSE_OWN (err u402))
 
+(define-constant SCORE_INSTITUTION_VERIFIED u30)
+(define-constant SCORE_INSTITUTION_UNVERIFIED u10)
+(define-constant SCORE_CERT_AGE_MULTIPLIER u1)
+(define-constant SCORE_ENDORSEMENT_MULTIPLIER u5)
+(define-constant SCORE_RATING_MULTIPLIER u3)
+(define-constant SCORE_REVOKED_PENALTY u100)
+(define-constant SCORE_MAX_AGE_BONUS u20)
+
 (define-data-var next-template-id uint u1)
 
 (define-non-fungible-token certificate uint)
@@ -725,3 +733,70 @@
 (define-read-only (has-endorsed (cert-id uint) (endorser principal))
   (is-some (map-get? certificate-endorsements {cert-id: cert-id, endorser: endorser}))
 )
+
+(define-map certificate-authenticity-scores
+  uint
+  {
+    base-score: uint,
+    age-score: uint,
+    endorsement-score: uint,
+    rating-score: uint,
+    total-score: uint,
+    last-calculated: uint
+  }
+)
+
+(define-private (calculate-age-score (cert-id uint))
+  (match (map-get? certificates cert-id)
+    cert-data
+    (let ((blocks-elapsed (- stacks-block-height (get issue-date cert-data))))
+      (if (> blocks-elapsed u0)
+        (let ((age-bonus (/ blocks-elapsed u1000)))
+          (if (< age-bonus SCORE_MAX_AGE_BONUS)
+            age-bonus
+            SCORE_MAX_AGE_BONUS))
+        u0))
+    u0))
+
+(define-private (calculate-endorsement-score (cert-id uint))
+  (let ((endorsement-count (get-certificate-endorsement-count cert-id)))
+    (* endorsement-count SCORE_ENDORSEMENT_MULTIPLIER)))
+
+(define-private (calculate-rating-score (cert-id uint))
+  (match (get-certificate-average-rating cert-id)
+    avg-rating (* avg-rating SCORE_RATING_MULTIPLIER)
+    u0))
+
+(define-public (calculate-authenticity-score (cert-id uint))
+  (match (map-get? certificates cert-id)
+    cert-data
+    (let (
+      (institution-verified (match (map-get? institutions (get institution cert-data))
+        inst-data (get verified inst-data)
+        false))
+      (base-score (if institution-verified SCORE_INSTITUTION_VERIFIED SCORE_INSTITUTION_UNVERIFIED))
+      (age-score (calculate-age-score cert-id))
+      (endorsement-score (calculate-endorsement-score cert-id))
+      (rating-score (calculate-rating-score cert-id))
+      (penalty (if (get revoked cert-data) SCORE_REVOKED_PENALTY u0))
+      (total-raw (+ (+ (+ base-score age-score) endorsement-score) rating-score))
+      (total-score (if (>= total-raw penalty) (- total-raw penalty) u0))
+    )
+      (map-set certificate-authenticity-scores cert-id {
+        base-score: base-score,
+        age-score: age-score,
+        endorsement-score: endorsement-score,
+        rating-score: rating-score,
+        total-score: total-score,
+        last-calculated: stacks-block-height
+      })
+      (ok total-score))
+    ERR_CERTIFICATE_NOT_FOUND))
+
+(define-read-only (get-authenticity-score (cert-id uint))
+  (map-get? certificate-authenticity-scores cert-id))
+
+(define-read-only (get-authenticity-score-value (cert-id uint))
+  (match (map-get? certificate-authenticity-scores cert-id)
+    score-data (some (get total-score score-data))
+    none))
